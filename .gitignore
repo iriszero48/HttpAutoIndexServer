@@ -31,3 +31,5 @@
 *.out
 *.app
 /.vs/HttpAutoIndexServer/v15
+/x64
+/HttpAutoIndexServer/x64

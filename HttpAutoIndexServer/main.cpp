@@ -7,6 +7,8 @@
 #include <sstream>
 #include <map>
 
+#define VERSION "1.0"
+
 #define DEBUG
 
 #ifndef DEBUG
@@ -26,9 +28,9 @@
 #define _CRT_SECURE_NO_WARNINGS
 #pragma warning(disable : 4996)
 
-#define err(st, msg)\
+#define err(st, msg, ...)\
 {\
-	fprintf(stderr, msg);\
+	fprintf(stderr, msg, __VA_ARGS__);\
 	exit(st);\
 }
 
@@ -97,7 +99,7 @@ std::string ToWindowsPath(const char* uri)
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <signal.h>
+#include <csignal>
 
 #endif
 
@@ -234,7 +236,7 @@ void GetFiles(const char* path, std::ostringstream& dirs, std::ostringstream& fi
 	DWORD dwError = 0;
 	StringCchLength(path, MAX_PATH, &lengthOfArg);
 	if (lengthOfArg > (MAX_PATH - 3))
-		err(EXIT_FAILURE, "Filename too long");
+	err(EXIT_FAILURE, "Filename too long");
 	const auto szDir = PathCombine(path, "*");
 	hFind = FindFirstFile(szDir.c_str(), &ffd);
 	if (INVALID_HANDLE_VALUE == hFind) DisplayError(szDir.c_str());
@@ -258,7 +260,8 @@ void GetFiles(const char* path, std::ostringstream& dirs, std::ostringstream& fi
 				ffd.cFileName,
 				std::to_string(filesize.QuadPart));
 		}
-	} while (FindNextFile(hFind, &ffd) != 0);
+	}
+	while (FindNextFile(hFind, &ffd) != 0);
 	dwError = GetLastError();
 	if (dwError != ERROR_NO_MORE_FILES) DisplayError(szDir.c_str());
 	FindClose(hFind);
@@ -284,11 +287,12 @@ void GetFiles(const char* path, std::ostringstream& dirs, std::ostringstream& fi
 		auto _fn = std::string(fn);
 		if (S_ISDIR(st.st_mode))
 		{
-			AddDir(files, PathCombine(fn, ""), PathCombine(_fn.substr(len).c_str(), ""));
+			auto href = PathCombine(fn, "");
+			AddDir(dirs, UrlEncode(href.c_str(), href.length()), PathCombine(_fn.substr(len).c_str(), ""));
 		}
 		else
 		{
-			AddFile(files, _fn, _fn, std::to_string(FileSize(_fn.c_str())));
+			AddFile(files, UrlEncode(_fn.c_str(), _fn.length()), _fn, std::to_string(FileSize(_fn.c_str())));
 		}
 	}
 	if (dir) closedir(dir);
@@ -445,7 +449,7 @@ static const std::map<std::string, std::string> ContentTypeTable =
 	{"mp2", "audio/mp2"},
 	{"mp2v", "video/mpeg"},
 	{"mp3", "audio/mp3"},
-	{"mp4", "video/mpeg4"},
+	{"mp4", "video/mp4"},
 	{"mpa", "video/x-mpg"},
 	{"mpd", "application/vnd.ms-project"},
 	{"mpe", "video/x-mpeg"},
@@ -561,7 +565,6 @@ static const std::map<std::string, std::string> ContentTypeTable =
 	{"tg4", "application/x-tg4"},
 	{"tga", "application/x-tga"},
 	{"tif", "image/tiff"},
-	{"tif", "application/x-tif"},
 	{"tiff", "image/tiff"},
 	{"tld", "text/xml"},
 	{"top", "drawing/x-top"},
@@ -681,7 +684,7 @@ std::string GetHttpUrlWithoutGet(const char* http, const uint32_t size)
 	std::regex_search(http, sm, std::regex(""#value": {0,1}.+?\\r{0,1}\\n")); \
 	const auto (value) = std::regex_replace((sm)[0].str(), std::regex("("#value": {0,1}|\\r{0,1}\\n)"), "")
 
-#define IfErrorThenCloseAndReturn(fun) if((fun) < 0) { fclose(fp); return; }
+#define IfErrorThenReturn(fun) if((fun) < 0) { return; }
 
 void HttpFile(
 	const int fd,
@@ -690,45 +693,46 @@ void HttpFile(
 	const uint64_t offset = 0,
 	uint64_t size = 0)
 {
-	char buf[4096] = { 0 };
+	char buf[4096] = {0};
 	const auto fp = fopen(path, "rb");
 	size_t len = 0;
 	if (!offset && !size)
 	{
 		std::ostringstream head;
-		head << "HTTP/1.1 200 OK\r\nContent-length:" <<
+		head << "HTTP/1.1 200 OK\r\nContent-Length:" <<
 			std::to_string(fileSize) <<
-			"\r\nContent-Type: " << GetContentType(path) << "\r\nAccept-Ranges: bytes"
-			"\r\nServer: iriszero"
+			"\r\nConnection: close"
+			"\r\nContent-Type: " << GetContentType(path) <<
+			"\r\nServer: iriszero/" VERSION
 			"\r\n\r\n";
 		printf("<========================\n%s\n", head.str().c_str());
-		IfErrorThenCloseAndReturn(send(fd, head.str().c_str(), head.str().length(), 0));
+		IfErrorThenReturn(send(fd, head.str().c_str(), head.str().length(), 0));
 		while ((len = fread(buf, sizeof(uint8_t), 4096, fp)) == 4096)
-			IfErrorThenCloseAndReturn(send(fd, buf, 4096, 0));
-		IfErrorThenCloseAndReturn(send(fd, buf, len, 0));
+			IfErrorThenReturn(send(fd, buf, 4096, 0));
+		IfErrorThenReturn(send(fd, buf, len, 0));
 	}
 	else
 	{
 		fseek(fp, offset, SEEK_SET);
 		std::ostringstream head;
-		head << "HTTP/1.1 206 Partial Content\r\nAccept-Ranges: bytes\r\n"
+		head << "HTTP/1.1 206 Partial Content\r\nAccept-Ranges: bytes\r\n" <<
+			"Server: iriszero/" VERSION "\r\n" <<
 			"Content-Type: " << GetContentType(path) << "\r\n"
 			"Content-Length: " << std::to_string(size)
 			<< "\r\nContent-Range: bytes " <<
 			std::to_string(offset) << "-" <<
 			std::to_string(offset + size - 1) << "/" <<
-			std::to_string(fileSize) << "\r\nConnection: keep-alive\r\n\r\n";
+			std::to_string(fileSize) << "\r\nConnection: close\r\n\r\n";
 		printf("<========================\n%s\n", head.str().c_str());
-		IfErrorThenCloseAndReturn(send(fd, head.str().c_str(), head.str().length(), 0));
+		IfErrorThenReturn(send(fd, head.str().c_str(), head.str().length(), 0));
 		for (; size > 4096; size -= len)
 		{
 			len = fread(buf, sizeof(uint8_t), 4096, fp);
-			IfErrorThenCloseAndReturn(send(fd, buf, len, 0));
+			IfErrorThenReturn(send(fd, buf, len, 0));
 		}
 		len = fread(buf, sizeof(uint8_t), size, fp);
-		IfErrorThenCloseAndReturn(send(fd, buf, len, 0));
+		IfErrorThenReturn(send(fd, buf, len, 0));
 	}
-	fclose(fp);
 }
 
 void IndexOf(const int fd, const char* path, const char* coding)
@@ -751,8 +755,8 @@ void IndexOf(const int fd, const char* path, const char* coding)
 		"</table></body>"
 		"</html>";
 	std::ostringstream head;
-	head << "HTTP/1.1 200 OK\r\nContent-length: " <<
-		std::to_string(html.str().length()) <<
+	head << "HTTP/1.1 200 OK\r\nContent-length: " << std::to_string(html.str().length()) <<
+		"\r\nServer: iriszero/" VERSION <<
 		"\r\nContent-Type: text/html\r\n\r\n";
 	send(fd, head.str().c_str(), head.str().length(), 0);
 	send(fd, html.str().c_str(), html.str().length(), 0);
@@ -794,7 +798,6 @@ std::list<std::tuple<uint64_t, uint64_t>> GetOffsetAndSize(
 				auto start = std::stoull(_start);
 				res.emplace_back(start, std::stoull(_end) - start + 1);
 			}
-
 			pos = i + 1;
 		}
 	}
@@ -820,6 +823,24 @@ std::list<std::tuple<uint64_t, uint64_t>> GetOffsetAndSize(
 	return res;
 }
 
+std::string GetNotFound()
+{
+	const auto html = 
+		"<html><head><title>404 Not Found</title></head>"
+		"<body>"
+		"<center><h1>404 Not Found</h1></center>"
+		"<hr><center>iriszero/" VERSION "</center>"
+		"</body></html>";
+	const auto len = strlen(html);
+	return
+		"HTTP/1.1 404 Not Found\r\n"
+		"Content-Length: " + std::to_string(len) + "\r\n"
+		"Content-Type: text/html\r\n"
+		"Server: iriszero/" VERSION "\r\n"
+		"Connection: close\r\n\r\n" +
+		html;
+}
+
 void Index(const char* path, const int port, const int threadNum, const char* coding, const char* icoPath)
 {
 	const auto icoSize = FileSize(icoPath);
@@ -828,13 +849,15 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 	svrAddr.sin_family = AF_INET;
 	svrAddr.sin_addr.s_addr = INADDR_ANY;
 	svrAddr.sin_port = htons(port);
-	char one[4] = { 0 };
+	char one[4] = {0};
 	socklen_t sinLen = sizeof(cliAddr);
 #ifdef _MSC_VER
 	WSADATA wsaData;
-	if (WSAStartup(MAKEWORD(2, 2), &wsaData) < 0) err(EXIT_FAILURE, "WinSock init fail");
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) < 0)
+	err(EXIT_FAILURE, "WinSock init fail");
 	auto sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (sock == INVALID_SOCKET) err(EXIT_FAILURE, "Can't open socket");
+	if (sock == INVALID_SOCKET)
+	err(EXIT_FAILURE, "Can't open socket");
 #else
 	struct sigaction action;
 	action.sa_handler = [](int) {};
@@ -853,83 +876,99 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 	listen(sock, threadNum);
 	std::valarray<std::thread> pool(threadNum);
 	std::generate(begin(pool), end(pool), [&]()
+	{
+		return std::thread([&]()
 		{
-			return std::thread([&]()
-				{
-					while (true)
-					{
-						const auto clientFd = accept(sock, (struct sockaddr *)&cliAddr, &sinLen);
-						char buf[4096] = { 0 };
-						auto len = 0;
-						std::ostringstream _http;
-						while ((len = recv(clientFd, buf, 4096, 0)) == 4096)
-							_http << buf;
-						_http.write(buf, len);
-						auto http = _http.str();
-						printf(
-							"%s:%d===================>\n%s\n",
-							inet_ntoa(cliAddr.sin_addr),
-							ntohs(cliAddr.sin_port),
-							http.c_str());
-						std::smatch sm;
-						auto _url = GetHttpUrlWithoutGet(http.c_str(), http.length());
+			static const auto NotFound = GetNotFound();
+
+			while (true)
+			{
+				const auto clientFd = accept(sock, (struct sockaddr *)&cliAddr, &sinLen);
+				char buf[4096] = {0};
+				auto len = 0;
+				std::ostringstream _http;
+				while ((len = recv(clientFd, buf, 4096, 0)) == 4096)
+					_http << buf;
+				_http.write(buf, len);
+				auto http = _http.str();
+				printf(
+					"%s:%d===================>\n%s\n",
+					inet_ntoa(cliAddr.sin_addr),
+					ntohs(cliAddr.sin_port),
+					http.c_str());
+				std::smatch sm;
+				auto _url = GetHttpUrlWithoutGet(http.c_str(), http.length());
 #ifdef _MSC_VER
-						auto url = ToWindowsPath(
-							UrlDecode(_url.c_str(), _url.length()).c_str());
+				auto url = ToWindowsPath(
+					UrlDecode(_url.c_str(), _url.length()).c_str());
 #else
 						auto url = UrlDecode(_url.c_str(), _url.length());
 #endif
-						auto urlStatus = false;
-						if (_url == "/") goto index;
-						if (_url == "/favicon.ico")
-						{
-							HttpFile(clientFd, icoPath, icoSize);
-							close(clientFd);
-							continue;
-						}
-						urlStatus = CheckUrl(url, path);
-						if (urlStatus && DirectoryExists(url.c_str()))
-						{
-							IndexOf(clientFd, url.c_str(), coding);
-						}
-						else if (urlStatus && FileExists(url.c_str()))
-						{
-							HttpHead(Range, http, sm);
-							if (Range.empty())
-							{
-								HttpFile(clientFd, url.c_str(), FileSize(url.c_str()));
-							}
-							else
-							{
-								for (auto& i : GetOffsetAndSize(Range, FileSize(url.c_str())))
-								{
-									HttpFile(
-										clientFd,
-										url.c_str(),
-										FileSize(url.c_str()),
-										std::get<0>(i),
-										std::get<1>(i));
-								}
-							}
-						}
-						else
-						{
-						index:;
-							IndexOf(clientFd, path, coding);
-						}
-						close(clientFd);
+				auto urlStatus = false;
+				if (_url == "/") goto index;
+				if (_url == "/favicon.ico" && !FileExists(PathCombine(path, "favicon.ico").c_str()))
+				{
+					if (!icoPath[0]) send(clientFd, NotFound.c_str(), NotFound.length(), 0);
+					else HttpFile(clientFd, icoPath, icoSize);
+					close(clientFd);
+					continue;
+				}
+				urlStatus = CheckUrl(url, path);
+				if (urlStatus && DirectoryExists(url.c_str()))
+				{
+					IndexOf(clientFd, url.c_str(), coding);
+				}
+				else if (urlStatus && FileExists(url.c_str()))
+				{
+					HttpHead(Range, http, sm);
+					if (Range.empty())
+					{
+						HttpFile(clientFd, url.c_str(), FileSize(url.c_str()));
 					}
-				});
+					else
+					{
+						for (auto& i : GetOffsetAndSize(Range, FileSize(url.c_str())))
+						{
+							HttpFile(
+								clientFd,
+								url.c_str(),
+								FileSize(url.c_str()),
+								std::get<0>(i),
+								std::get<1>(i));
+						}
+					}
+				}
+				else
+				{
+				index:;
+					IndexOf(clientFd, path, coding);
+				}
+				close(clientFd);
+			}
 		});
+	});
 	for (auto& t : pool) t.join();
 }
 
 int main(const int argc, char* argv[])
 {
-	if (argc != 6)
+	if (argc == 5)
 	{
-		fprintf(stderr, "%s IndexPath Port threadNum Coding IcoPath\n", argv[0]);
-		exit(EXIT_FAILURE);
+		Index(
+			argv[1],
+			strtol(argv[2], &argv[2], 10),
+			strtol(argv[3], &argv[3], 10),
+			argv[4],
+			"");
 	}
-	Index(argv[1], strtol(argv[2], &argv[2], 10), strtol(argv[3], &argv[3], 10), argv[4], argv[5]);
+	if (argc == 6)
+	{
+		Index(
+			argv[1],
+			strtol(argv[2], &argv[2], 10),
+			strtol(argv[3], &argv[3], 10),
+			argv[4],
+			argv[5]);
+	}
+	err(EXIT_FAILURE, "%s IndexPath Port threadNum Coding [IcoPath]\n", argv[0]);
 }
