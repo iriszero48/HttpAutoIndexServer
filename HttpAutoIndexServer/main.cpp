@@ -292,7 +292,8 @@ void GetFiles(const char* path, std::ostringstream& dirs, std::ostringstream& fi
 		}
 		else
 		{
-			AddFile(files, UrlEncode(_fn.c_str(), _fn.length()), _fn, std::to_string(FileSize(_fn.c_str())));
+			auto display = _fn.substr(len);
+			AddFile(files, UrlEncode(_fn.c_str(), _fn.length()), _fn.substr(len), std::to_string(FileSize(_fn.c_str())));
 		}
 	}
 	if (dir) closedir(dir);
