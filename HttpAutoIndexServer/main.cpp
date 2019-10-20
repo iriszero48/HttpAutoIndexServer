@@ -843,7 +843,6 @@ std::string GetNotFound()
 
 void Index(const char* path, const int port, const int threadNum, const char* coding, const char* icoPath)
 {
-	const auto icoSize = FileSize(icoPath);
 	UrlEncodeTable['/'] = '/';
 	sockaddr_in svrAddr{}, cliAddr{};
 	svrAddr.sin_family = AF_INET;
@@ -880,7 +879,7 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 		return std::thread([&]()
 		{
 			static const auto NotFound = GetNotFound();
-
+			const auto iconPath = PathCombine(path, "favicon.ico");
 			while (true)
 			{
 				const auto clientFd = accept(sock, (struct sockaddr *)&cliAddr, &sinLen);
@@ -906,10 +905,10 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 #endif
 				auto urlStatus = false;
 				if (_url == "/") goto index;
-				if (_url == "/favicon.ico" && !FileExists(PathCombine(path, "favicon.ico").c_str()))
+				if (_url == "/favicon.ico" && !FileExists(iconPath.c_str()))
 				{
 					if (!icoPath[0]) send(clientFd, NotFound.c_str(), NotFound.length(), 0);
-					else HttpFile(clientFd, icoPath, icoSize);
+					else HttpFile(clientFd, icoPath, FileSize(iconPath.c_str()));
 					close(clientFd);
 					continue;
 				}
