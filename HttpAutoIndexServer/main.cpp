@@ -7,7 +7,7 @@
 #include <sstream>
 #include <map>
 
-#define VERSION "hais/1.1"
+#define VERSION "hais/1.2"
 
 #define DEBUG
 
