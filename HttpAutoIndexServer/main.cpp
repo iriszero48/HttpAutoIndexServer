@@ -7,7 +7,7 @@
 #include <sstream>
 #include <map>
 
-#define VERSION "1.0"
+#define VERSION "hais/1.1"
 
 #define DEBUG
 
@@ -158,6 +158,40 @@ uint64_t FileSize(const char* path)
 #endif
 }
 
+std::string FileLastModified(const char* path)
+{
+	time_t raw;
+//#ifdef _MSC_VER
+//	#define Oops()\
+//	{\
+//		DisplayError("Get last modification time of file");\
+//		return nullptr;\
+//	}
+//	auto fh = CreateFile(
+//		path,
+//		GENERIC_READ | FILE_WRITE_ATTRIBUTES,
+//		0,
+//		NULL,
+//		OPEN_EXISTING,
+//		0,
+//		NULL);
+//	if (fh == INVALID_HANDLE_VALUE) Oops();
+//	FILETIME ft;
+//	if (GetFileTime(fh, NULL, NULL, &ft) == 0) Oops();
+//	ULARGE_INTEGER ull;
+//	ull.LowPart = ft.dwLowDateTime;
+//	ull.HighPart = ft.dwHighDateTime;
+//	raw = ull.QuadPart / 10000000ULL - 11644473600ULL;
+//#else
+	struct stat sb {};
+	stat(path, &sb);
+	raw = sb.st_mtime;
+//#endif
+	char res[35];
+	strftime(res, 34, "%a, %d %b %G %T GMT", gmtime(&raw));
+	return res;
+}
+
 std::string UrlEncode(const char* s, const uint16_t len)
 {
 #define ToHex(x) ((x) > 9 ? (x) + 55 : (x) + 48)
@@ -225,7 +259,7 @@ std::string PathCombine(const char* lp, const char* rp)
 void GetFiles(const char* path, std::ostringstream& dirs, std::ostringstream& files)
 {
 #define AddFile(oss, href, display, size) \
-	((oss) << "<tr><td><a href=\"" << (href) << "\">" << (display) << "</a></td><td>" << (size) << "</td></tr>");
+	((oss) << "<tr><td><a href=\"" << (href) << "\">" << (display) << "</a></td><td align=\"right\">" << (size) << "</td></tr>");
 #define AddDir(oss, href, display) \
 	((oss) << "<a href=\"" << (href) << "\">" << (display) << "</a><br/>")
 #ifdef _MSC_VER
@@ -680,36 +714,72 @@ std::string GetHttpUrlWithoutGet(const char* http, const uint32_t size)
 	return !start && !end ? std::string() : std::string(http + start, end - start);
 }
 
-#define HttpHead(value, http, sm) \
-	std::regex_search(http, sm, std::regex(""#value": {0,1}.+?\\r{0,1}\\n")); \
-	const auto (value) = std::regex_replace((sm)[0].str(), std::regex("("#value": {0,1}|\\r{0,1}\\n)"), "")
+void HttpNotFound(const int fd)
+{
 
-#define IfErrorThenReturn(fun) if((fun) < 0) { return; }
+	static const auto html =
+		"<html><head><title>404 Not Found</title></head>"
+		"<body>"
+		"<center><h1>404 Not Found</h1></center>"
+		"<hr><center>iriszero/" VERSION "</center>"
+		"</body></html>";
+	static const auto len = strlen(html);
+	std::ostringstream oss;
+	oss <<
+		"HTTP/1.1 404 Not Found\r\n"
+		"Content-Length: " << std::to_string(len) << "\r\n"
+		"Content-Type: text/html\r\n"
+		"Server: iriszero/" VERSION "\r\n"
+		"Connection: close\r\n\r\n" <<
+		html;
+	const auto http = oss.str();
+	printf("<========================\n%s\n", http.c_str());
+	send(fd, http.c_str(), http.length(), 0);
+}
+
+void HttpNotModified(const int fd, const char* lastModified)
+{
+	std::ostringstream oss;
+	oss << "HTTP/1.1 304 Not Modified\r\n"
+		"Server: iriszero/" VERSION "\r\n"
+		"Last-Modified: " << lastModified << "\r\n"
+		"Connection: close\r\n\r\n";
+	const auto http = oss.str();
+	printf("<========================\n%s\n", http.c_str());
+	send(fd, http.c_str(), http.length(), 0);
+}
 
 void HttpFile(
 	const int fd,
 	const char* path,
+	const char* lastModified,
 	const uint64_t fileSize,
 	const uint64_t offset = 0,
 	uint64_t size = 0)
 {
+#define HttpHead(value, http, sm) \
+	std::regex_search(http, sm, std::regex(""#value": {0,1}.+?\\r{0,1}\\n", std::regex::icase)); \
+	const auto (value) = std::regex_replace((sm)[0].str(), std::regex("("#value": {0,1}|\\r{0,1}\\n)", std::regex::icase), "")
+
+#define IfErrorThenReturn(fun, fp) if((fun) < 0) { fclose(fp); return; }
 	char buf[4096] = {0};
-	const auto fp = fopen(path, "rb");
 	size_t len = 0;
+	const auto fp = fopen(path, "rb");
 	if (!offset && !size)
 	{
 		std::ostringstream head;
 		head << "HTTP/1.1 200 OK\r\nContent-Length:" <<
 			std::to_string(fileSize) <<
 			"\r\nConnection: close"
+			"\r\nLast-Modified: " << lastModified <<
 			"\r\nContent-Type: " << GetContentType(path) <<
 			"\r\nServer: iriszero/" VERSION
 			"\r\n\r\n";
 		printf("<========================\n%s\n", head.str().c_str());
-		IfErrorThenReturn(send(fd, head.str().c_str(), head.str().length(), 0));
+		IfErrorThenReturn(send(fd, head.str().c_str(), head.str().length(), 0), fp);
 		while ((len = fread(buf, sizeof(uint8_t), 4096, fp)) == 4096)
-			IfErrorThenReturn(send(fd, buf, 4096, 0));
-		IfErrorThenReturn(send(fd, buf, len, 0));
+			IfErrorThenReturn(send(fd, buf, 4096, 0), fp);
+		IfErrorThenReturn(send(fd, buf, len, 0), fp);
 	}
 	else
 	{
@@ -724,14 +794,14 @@ void HttpFile(
 			std::to_string(offset + size - 1) << "/" <<
 			std::to_string(fileSize) << "\r\nConnection: close\r\n\r\n";
 		printf("<========================\n%s\n", head.str().c_str());
-		IfErrorThenReturn(send(fd, head.str().c_str(), head.str().length(), 0));
+		IfErrorThenReturn(send(fd, head.str().c_str(), head.str().length(), 0), fp);
 		for (; size > 4096; size -= len)
 		{
 			len = fread(buf, sizeof(uint8_t), 4096, fp);
-			IfErrorThenReturn(send(fd, buf, len, 0));
+			IfErrorThenReturn(send(fd, buf, len, 0), fp);
 		}
 		len = fread(buf, sizeof(uint8_t), size, fp);
-		IfErrorThenReturn(send(fd, buf, len, 0));
+		IfErrorThenReturn(send(fd, buf, len, 0), fp);
 	}
 }
 
@@ -758,6 +828,7 @@ void IndexOf(const int fd, const char* path, const char* coding)
 	head << "HTTP/1.1 200 OK\r\nContent-length: " << std::to_string(html.str().length()) <<
 		"\r\nServer: iriszero/" VERSION <<
 		"\r\nContent-Type: text/html\r\n\r\n";
+	printf("<========================\n%s\n", head.str().c_str());
 	send(fd, head.str().c_str(), head.str().length(), 0);
 	send(fd, html.str().c_str(), html.str().length(), 0);
 }
@@ -823,24 +894,6 @@ std::list<std::tuple<uint64_t, uint64_t>> GetOffsetAndSize(
 	return res;
 }
 
-std::string GetNotFound()
-{
-	const auto html = 
-		"<html><head><title>404 Not Found</title></head>"
-		"<body>"
-		"<center><h1>404 Not Found</h1></center>"
-		"<hr><center>iriszero/" VERSION "</center>"
-		"</body></html>";
-	const auto len = strlen(html);
-	return
-		"HTTP/1.1 404 Not Found\r\n"
-		"Content-Length: " + std::to_string(len) + "\r\n"
-		"Content-Type: text/html\r\n"
-		"Server: iriszero/" VERSION "\r\n"
-		"Connection: close\r\n\r\n" +
-		html;
-}
-
 void Index(const char* path, const int port, const int threadNum, const char* coding, const char* icoPath)
 {
 	UrlEncodeTable['/'] = '/';
@@ -878,7 +931,6 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 	{
 		return std::thread([&]()
 		{
-			static const auto NotFound = GetNotFound();
 			const auto iconPath = PathCombine(path, "favicon.ico");
 			while (true)
 			{
@@ -904,11 +956,16 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 						auto url = UrlDecode(_url.c_str(), _url.length());
 #endif
 				auto urlStatus = false;
+				if (_url.empty()) continue;
 				if (_url == "/") goto index;
 				if (_url == "/favicon.ico" && !FileExists(iconPath.c_str()))
 				{
-					if (!icoPath[0]) send(clientFd, NotFound.c_str(), NotFound.length(), 0);
-					else HttpFile(clientFd, icoPath, FileSize(iconPath.c_str()));
+					if (!icoPath[0]) HttpNotFound(clientFd);
+					else HttpFile(
+						clientFd, 
+						icoPath,
+						FileLastModified(iconPath.c_str()).c_str(),
+						FileSize(iconPath.c_str()));
 					close(clientFd);
 					continue;
 				}
@@ -922,7 +979,27 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 					HttpHead(Range, http, sm);
 					if (Range.empty())
 					{
-						HttpFile(clientFd, url.c_str(), FileSize(url.c_str()));
+						std::regex_search(
+							http, 
+							sm, 
+							std::regex("If-Modified-Since: {0,1}.+?\\r{0,1}\\n", std::regex::icase));
+						auto fileLastModified = FileLastModified(url.c_str());
+						auto lastModified = std::regex_replace(
+							sm[0].str(), 
+							std::regex("(If-Modified-Since: {0,1}|\\r{0,1}\\n)", std::regex::icase),
+							"");
+						if(lastModified == fileLastModified)
+						{
+							HttpNotModified(clientFd, fileLastModified.c_str());
+						}
+						else
+						{
+							HttpFile(
+								clientFd,
+								url.c_str(),
+								FileLastModified(url.c_str()).c_str(),
+								FileSize(url.c_str()));
+						}
 					}
 					else
 					{
@@ -931,6 +1008,7 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 							HttpFile(
 								clientFd,
 								url.c_str(),
+								nullptr,
 								FileSize(url.c_str()),
 								std::get<0>(i),
 								std::get<1>(i));
