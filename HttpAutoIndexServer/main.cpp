@@ -79,9 +79,9 @@ std::string ToUnixPath(const char* uri)
 
 std::string ToWindowsPath(const char* uri)
 {
-	auto r = std::string(uri + 1, 1);
-	r.append(":");
-	r.append(uri + 2);
+	auto r = std::string(uri);
+	//r.append(":");
+	//r.append(uri + 2);
 	for (auto& c : r)
 	{
 		if (c == '/') c = '\\';
@@ -894,8 +894,9 @@ std::list<std::tuple<uint64_t, uint64_t>> GetOffsetAndSize(
 	return res;
 }
 
-void Index(const char* path, const int port, const int threadNum, const char* coding, const char* icoPath)
+void Index(const char* path, const int port, const int threadNum, const char* indexPage)
 {
+	const auto coding = "utf-8";
 	UrlEncodeTable['/'] = '/';
 	sockaddr_in svrAddr{}, cliAddr{};
 	svrAddr.sin_family = AF_INET;
@@ -931,7 +932,7 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 	{
 		return std::thread([&]()
 		{
-			const auto iconPath = PathCombine(path, "favicon.ico");
+			const auto indexPath = PathCombine(path, indexPage);
 			while (true)
 			{
 				const auto clientFd = accept(sock, (struct sockaddr *)&cliAddr, &sinLen);
@@ -955,26 +956,14 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 #else
 						auto url = UrlDecode(_url.c_str(), _url.length());
 #endif
-				auto urlStatus = false;
 				if (_url.empty()) continue;
 				if (_url == "/") goto index;
-				if (_url == "/favicon.ico" && !FileExists(iconPath.c_str()))
-				{
-					if (!icoPath[0]) HttpNotFound(clientFd);
-					else HttpFile(
-						clientFd, 
-						icoPath,
-						FileLastModified(iconPath.c_str()).c_str(),
-						FileSize(iconPath.c_str()));
-					close(clientFd);
-					continue;
-				}
-				urlStatus = CheckUrl(url, path);
-				if (urlStatus && DirectoryExists(url.c_str()))
+				url = PathCombine(path, url.c_str());
+				if (DirectoryExists(url.c_str()))
 				{
 					IndexOf(clientFd, url.c_str(), coding);
 				}
-				else if (urlStatus && FileExists(url.c_str()))
+				else if (FileExists(url.c_str()))
 				{
 					HttpHead(Range, http, sm);
 					if (Range.empty())
@@ -1018,7 +1007,12 @@ void Index(const char* path, const int port, const int threadNum, const char* co
 				else
 				{
 				index:;
-					IndexOf(clientFd, path, coding);
+					//IndexOf(clientFd, path, coding);
+					HttpFile(
+						clientFd,
+						indexPath.c_str(),
+						FileLastModified(indexPath.c_str()).c_str(),
+						FileSize(indexPath.c_str()));
 				}
 				close(clientFd);
 			}
@@ -1035,17 +1029,7 @@ int main(const int argc, char* argv[])
 			argv[1],
 			strtol(argv[2], &argv[2], 10),
 			strtol(argv[3], &argv[3], 10),
-			argv[4],
-			"");
+			argv[4]);
 	}
-	if (argc == 6)
-	{
-		Index(
-			argv[1],
-			strtol(argv[2], &argv[2], 10),
-			strtol(argv[3], &argv[3], 10),
-			argv[4],
-			argv[5]);
-	}
-	err(EXIT_FAILURE, "%s IndexPath Port threadNum Coding [IcoPath]\n", argv[0]);
+	err(EXIT_FAILURE, "%s IndexPath Port threadNum indexPage\n", argv[0]);
 }
